@@ -265,8 +265,10 @@ def create_stamp_slices(
     errors = dict()
 
     num_frames = len(fits_files)
+
+    # Get the sequence_id from the header (and scrub a little)
     unit_id, cam_id, seq_time = fits.getval(fits_files[0], 'SEQID').split('_')
-    unit_id = re.match(r'.*(PAN\d\d\d).*', unit_id)[1]
+    unit_id = re.match(r'.*(PAN\d\d\d).*', unit_id)[1]  # see panoptes/POCS#586
     sequence = '_'.join([unit_id, cam_id, seq_time])
 
     logging.info("{} files found for {}".format(num_frames, sequence))
@@ -300,7 +302,6 @@ def create_stamp_slices(
             date_parse(os.path.splitext(fn.split('/')[-1])[0].split('_')[4])
         ).mjd
         for fn in fits_files if 'pointing' not in fn])
-        
     
     #image_times = np.array(
     #    [Time(date_parse(fits.getval(fn, 'DATE-OBS'))).mjd for fn in fits_files])
@@ -341,17 +342,19 @@ def create_stamp_slices(
         for star_row in star_iterator:
             star_id = str(star_row.Index)
 
+            # Check if we already have data (unless force)
             try:
-                existing_sum = np.array(stamps[star_id]['data'][frame_idx]).sum()
-                if star_id in stamps and existing_sum:
-                    logger.info("Skipping {}, {} for having data: {}".format(star_id,
-                                                                             frame_idx,
-                                                                             existing_sum))
+                if force_new is False:
+                    existing_sum = np.array(stamps[star_id]['data'][frame_idx]).sum()
+                    if star_id in stamps and existing_sum:
+                        logger.info("Skipping {}, {} for having data: {}".format(star_id,
+                                                                                 frame_idx,
+                                                                                 existing_sum))
                     continue
             except KeyError:
                 pass
 
-            star_pos = wcs.all_world2pix(star_row.ra, star_row.dec, 0)
+            star_pos = wcs.all_world2pix(star_row.ra, star_row.dec, 1)
 
             # Get stamp data. If problem, mark for skipping in future.
             try:
