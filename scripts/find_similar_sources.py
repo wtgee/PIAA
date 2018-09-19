@@ -12,59 +12,66 @@ from pocs.utils import current_time
 
 import logging
 
-def main(stamp_file, show_progress=True, force=False, *args, **kwargs):
+def main(stamp_file, picid=None, show_progress=True, force=False, *args, **kwargs):
     try:
         stamps = h5py.File(stamp_file)
     except FileNotFoundError:
         logging.warning("File not found: {}".format(stamp_file))
         return
     
-    star_iterator = enumerate(list(stamps.keys()))
+    if picid:
+        star_iterator = enumerate([picid])
+        total = 1
+    else:
+        star_iterator = enumerate(list(stamps.keys()))
+        total = len(list(stamps.keys()))
     
     # Show progress bar
     if show_progress:
-        star_iterator = tqdm(star_iterator, total=len(list(stamps.keys())), desc='Looping sources')
+        star_iterator = tqdm(star_iterator, total=total, desc='Looping sources')
 
-    for i, picid in star_iterator:
-        if force is False and 'similar_stars' in stamps[picid]:
-            logging.debug("Skipping {} - already exists".format(picid))
+    for i, source_picid in star_iterator:
+        if force is False and 'similar_stars' in stamps[source_picid]:
+            logging.debug("Skipping {} - already exists".format(source_picid))
             continue
 
         diff = list()
-        flags = stamps[picid].attrs['flags']
+        flags = stamps[source_picid].attrs['flags']
 
-        if int(flags):
-            logging.debug("Skipping {} - SE flags: {}".format(picid, flags))
+        if int(flags) and int(flags) != 2:
+            logging.debug("Skipping {} - SE flags: {}".format(source_picid, flags))
             continue
 
-        if float(stamps[picid].attrs['vmag']) > 13:
+        if float(stamps[source_picid].attrs['vmag']) > 13:
             logging.debug("Skipping {} - Vmag: {:.02f} > 13".format(
-                picid, 
-                float(stamps[picid].attrs['vmag']))
+                source_picid, 
+                float(stamps[source_picid].attrs['vmag']))
             )
             continue
 
+        local_csv_file = stamp_file.replace('.hdf5', '_{}.csv'.format(picid))
         vary_series = pipeline.find_similar_stars(
             picid, 
             stamps, 
-            show_progress=show_progress
+            show_progress=show_progress,
+            csv_file=local_csv_file,
+            force_new=force
         )
         
+        #top_index = [int(x) for x in list(vary_series[:200].index)]
+        #
+        #if force:
+        #    try:
+        #        del stamps[source_picid]['similar_stars']
+        #        del stamps[source_picid]['similar_star_scores']
+        #    except KeyError:
+        #        pass
         
-        top_index = [int(x) for x in list(vary_series[:200].index)]
-        
-        if force:
-            try:
-                del stamps[picid]['similar_stars']
-                del stamps[picid]['similar_star_scores']
-            except KeyError:
-                pass
-
-        # Store in stamps file
-        logging.info("Success {}".format(picid))
-        stamps[picid]['similar_stars'] = top_index
-        stamps[picid]['similar_star_scores'] = np.array(vary_series[:200])
-        stamps.flush()
+        ## Store in stamps file
+        #logging.info("Success {}".format(source_picid))
+        #stamps[source_picid]['similar_stars'] = top_index
+        #stamps[source_picid]['similar_star_scores'] = np.array(vary_series[:200])
+        #stamps.flush()
 
         
 if __name__ == '__main__':
@@ -72,6 +79,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Find morphologically similar stars")
     parser.add_argument('--stamp_file', required=True, type=str, help="HDF5 Stamps file")
+    parser.add_argument('--csv_file', type=str, help="Filename for saved csv")
+    parser.add_argument('--picid', default=None, help="Only perform search for given PICID. Otherwise use all sources.")
     parser.add_argument('--log_level', default='debug', help="Log level")
     parser.add_argument('--log_file', help="Log files, default $PANLOG/create_stamps_<datestamp>.log")
     parser.add_argument('--show_progress', default=True, action='store_true', 
@@ -111,6 +120,6 @@ if __name__ == '__main__':
     logging.info('*'*80)
     ################ End Setup logging ##############
     
-    stamps_fn = main(**vars(args))
-    if stamps_fn:
-        print("Similar sources added to {}".format(stamps_fn))
+    csv_out = main(**vars(args))
+    if csv_out:
+        print("Similar sources added to {}".format(csv_out))

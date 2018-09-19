@@ -447,20 +447,31 @@ def find_similar_stars(
         stamps,
         csv_file=None,
         camera_bias=2048,
-        num_refs=100,
+        num_refs=101,
         snr_limit=10,
         show_progress=True,
         force_new=False,
         *args, **kwargs):
-    """ Get all variances for given target
+    """Find similar stars based on morphology of source.
 
     Args:
-        stamps(np.array): Collection of stamps with axes: frame, PIC, pixels
-        i(int): Index of target PIC
+        picid (str): PICID of target source.
+        stamps (`h5py.File`): The HDF5 stamps file.
+        csv_file (str, optional): Name for output file to save results.
+        camera_bias (int, optional): Bias to be subtracted from data, default 2048.
+        num_refs (int, optional): Number of references to use for comparison, defaul 100.
+        snr_limit (int, optional): SNR limit, default 10.
+        show_progress (bool, optional): If progress bars should be shown, default True.
+        force_new (bool, optional): If new comparisons should be performed, default False.
+        *args: Optional args
+        **kwargs: Optional kwargs
+
+    Returns:
+        `pandas.DataFrame`: The dataframe holding the top `num_refs` entries.
     """
     logger.info("Finding similar stars for PICID {}".format(picid))
 
-    if force_new and csv_file and os.path.exist(csv_file):
+    if force_new and csv_file and os.path.exists(csv_file):
         logger.info("Forcing new file for {}".format(picid))
         with suppress(FileNotFoundError):
             os.remove(csv_file)
@@ -472,8 +483,6 @@ def find_similar_stars(
     except Exception:
         pass
 
-    data = dict()
-
     logging.info("Getting Target PSC and subtracting bias")
     psc0 = get_psc(picid, stamps, **kwargs) - camera_bias
     logger.info("Target PSC shape: {}".format(psc0.shape))
@@ -483,69 +492,101 @@ def find_similar_stars(
     logger.info("Normalizing target for {} frames".format(num_frames))
     normalized_psc0 = np.zeros_like(psc0, dtype='f4')
 
-    good_frames = []
-    for frame_index in range(num_frames):
-        try:
-            if psc0[frame_index].sum() > 0.:
-                # Normalize and store frame
-                normalized_psc0[frame_index] = psc0[frame_index] / psc0[frame_index].sum()
-
-                # Save frame index
-                good_frames.append(frame_index)
-            else:
-                logger.warning("Sum for target frame {} is 0".format(frame_index))
-        except RuntimeWarning:
-            logging.warning("Skipping frame {}".format(frame_index))
-
-    iterator = enumerate(list(stamps.keys()))
+    data = list()
+    bad_sources = list()
+    
+    frame_iterator = range(num_frames)
     if show_progress:
-        iterator = tqdm(
-            iterator,
-            total=len(stamps),
-            desc="Finding similar",
-            leave=False
+        frame_iterator = tqdm(
+            frame_iterator,
+            total=num_frames,
+            desc="Finding similiar PICID".format(picid)
         )
+    
+    for target_frame in frame_iterator:
 
-    for i, source_index in iterator:
-        # Skip low SNR (if we know SNR)
-        try:
-            snr = float(stamps[source_index].attrs['snr'])
-            if snr < snr_limit:
-                logging.info("Skipping PICID {}, low snr {:.02f}".format(source_index, snr))
+        good_frames = list()
+        # Normalize all the frames (and remove bad frames)
+        for frame_index in range(num_frames):
+            if frame_index == target_frame:
+                logger.info("Removing frame {} as frame of interest".format(target_frame))
                 continue
-        except KeyError as e:
-            logging.debug("No source in table: {}".format(picid))
-            pass
 
-        try:
-            psc1 = get_psc(source_index, stamps, **kwargs) - camera_bias
-        except Exception:
-            continue
+            logger.info("Searching frame {} for target frame {}".format(frame_index, target_frame))
+                
+            try:
+                # Normalize and store as good frame if it has values
+                if psc0[frame_index].sum() > 0.:
+                    normalized_psc0[frame_index] = psc0[frame_index] / psc0[frame_index].sum()
 
-        normalized_psc1 = np.zeros_like(psc1, dtype='f4')
+                    # Save frame index
+                    good_frames.append(frame_index)
+                else:
+                    logger.warning("Sum for target frame {} is 0".format(frame_index))
+            except RuntimeWarning:
+                logging.warning("Skipping frame {}".format(frame_index))
 
-        # Normalize
-        for frame_index in good_frames:
-            if psc1[frame_index].sum() > 0.:
-                normalized_psc1[frame_index] = psc1[frame_index] / psc1[frame_index].sum()
+        star_iterator = enumerate(list(stamps.keys()))
+        if show_progress:
+            star_iterator = tqdm(
+                star_iterator,
+                total=len(stamps),
+                desc="Finding similar source {}".format(target_frame),
+                leave=False
+            )
+        logger.info("Looping {} sources".format(len(stamps)))
 
-        # Store in the grid
-        try:
-            v = ((normalized_psc0 - normalized_psc1) ** 2).sum()
-            data[source_index] = v
-        except ValueError as e:
-            logger.info("Skipping invalid stamp for source {}: {}".format(source_index, e))
+        # Compare to all sources
+        for i, source_index in star_iterator:
+            if source_index in bad_sources:
+                logger.info("Skipping bad source: {}".format(source_index))
+                continue
 
-    df0 = pd.DataFrame(
-        {'v': list(data.values())},
-        index=list(data.keys())).sort_values(by='v')
+            # Skip low SNR (if we know SNR)
+            try:
+                snr = float(stamps[source_index].attrs['snr'])
+                if snr < snr_limit:
+                    logging.info("Skipping PICID {}, low snr {:.02f}".format(source_index, snr))
+                    bad_sources.append(source_index)
+                    continue
+            except KeyError as e:
+                logging.info("No source in table: {}".format(picid))
+                bad_sources.append(source_index)
+                pass
+
+            # Get the PSC for source
+            try:
+                psc1 = get_psc(source_index, stamps, **kwargs) - camera_bias
+            except Exception:
+                logger.warning("Can't get PSC {}".format(source_index))
+                bad_sources.append(source_index)
+                continue
+
+            normalized_psc1 = np.zeros_like(psc1, dtype='f4')
+
+            # Normalize - NOTE: we are not including the target_frame
+            for frame_index in good_frames:
+                if psc1[frame_index].sum() > 0.:
+                    normalized_psc1[frame_index] = psc1[frame_index] / psc1[frame_index].sum()
+
+            # Store in the grid
+            try:
+                v = ((normalized_psc0 - normalized_psc1) ** 2).sum()
+                logger.debug("Vary: {} {} {:.03f}".format(source_index, target_frame, v))
+                data.append((source_index, target_frame, v))
+            except ValueError as e:
+                logger.info("Skipping invalid stamp for source {}: {}".format(source_index, e))
+                bad_sources.append(source_index)
+
+
+    df0 = pd.DataFrame(data, columns=['picid', 'frame', 'v']).set_index(['frame']).sort_values(['v'])
 
     if csv_file:
-        df0[:num_refs].to_csv(csv_file)
+        df0.to_csv(csv_file)
 
     return df0
-
-
+    
+    
 def get_ideal_full_coeffs(stamp_collection):
 
     num_frames = stamp_collection.shape[1]
