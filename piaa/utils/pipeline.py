@@ -431,6 +431,9 @@ def create_stamp_slices(
 
 
 def get_psc(picid, stamps, frame_slice=None):
+    if not isinstance(picid, str):
+        picid = str(picid)
+
     try:
         psc = np.array(stamps[picid]['data'])
     except KeyError:
