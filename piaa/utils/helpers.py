@@ -10,7 +10,7 @@ from astropy.time import Time
 from astropy.table import Table
 from astropy.wcs import WCS
 
-from pocs.utils.db import postgres as clouddb
+from pocs.utils.db.postgres import get_cursor
 
 import logging
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def get_stars(
             otherwise the raw cursor if `cursor_only=True`.
     """
     if not cursor:
-        cursor = clouddb.get_cursor(instance='tess-catalog', db_name='v6', db_user='postgres', **kwargs)
+        cursor = get_cursor(port=5433, db_name='v6', db_user='postgres', **kwargs)
         
     cursor.execute("""SELECT id, ra, dec, tmag, vmag, e_tmag, twomass
         FROM {}
