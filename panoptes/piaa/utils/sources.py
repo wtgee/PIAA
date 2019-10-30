@@ -104,7 +104,6 @@ def lookup_point_sources(fits_file,
     Raises:
         error.InvalidSystemCommand: Description
     """
-
     def _print(msg):
         if 'logger' in kwargs:
             logger.debug(msg)
@@ -310,7 +309,6 @@ def _lookup_via_sextractor(fits_file, sextractor_params=None, *args, **kwargs):
 
 def _lookup_via_tess_catalog(fits_file, wcs=None, *args, **kwargs):
     wcs_footprint = wcs.calc_footprint()
-    _print("WCS footprint: {}".format(wcs_footprint))
 
     # Get stars from TESS catalog
     point_sources = helpers.get_stars_from_footprint(
