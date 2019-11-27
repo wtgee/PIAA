@@ -245,7 +245,7 @@ def get_aperture_sums(psc0,
             ideal_photon_noise = np.sqrt(i_sum)
 
             readout = readout_noise * len(pixel_loc)
-            
+
             # TODO Scintillation noise?
 
             # TODO Scintillation noise?
@@ -571,7 +571,6 @@ def get_postage_stamps(point_sources, fits_fn, stamp_size=10, tmp_dir=None, forc
         fits_fn (str): The name of the FITS file to extract stamps from.
         stamp_size (int, optional): The size of the stamp to extract, default 10 pixels.
     """
-
     if tmp_dir is None:
         tmp_dir = '/tmp'
 

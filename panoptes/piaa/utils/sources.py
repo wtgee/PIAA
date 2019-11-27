@@ -155,7 +155,6 @@ def lookup_point_sources(fits_file,
 
 def get_catalog_match(point_sources, wcs, table='full_catalog', verbose=False, **kwargs):
     assert point_sources is not None
-
     def _print(msg):
         if 'logger' in kwargs:
             logger.debug(msg)
@@ -271,7 +270,7 @@ def _lookup_via_sextractor(fits_file, sextractor_params=None, trim_size=10, verb
             raise Exception("Problem running sextractor: {}".format(e))
 
     # Read catalog
-    _print('Building detected source table with {source_file}')
+    _print('Building detected source table {source_file}')
     point_sources = Table.read(source_file, format='ascii.sextractor')
 
     # Remove the point sources that sextractor has flagged
