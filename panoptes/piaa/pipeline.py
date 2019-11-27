@@ -15,6 +15,8 @@ import csv
 from dateutil.parser import parse as parse_date
 from astropy.io import fits
 from astropy.stats import SigmaClip
+from astropy.stats import sigma_clipped_stats
+
 
 from photutils import Background2D
 from photutils import MeanBackground
@@ -23,7 +25,6 @@ from photutils import MedianBackground
 from photutils import SExtractorBackground
 from photutils import BkgZoomInterpolator
 
-from panoptes.utils.images import fits as fits_utils
 from panoptes.utils import bayer
 from panoptes.utils.logger import get_root_logger
 
@@ -31,7 +32,6 @@ from panoptes.piaa.utils import helpers
 from panoptes.piaa.utils import plot
 
 import logging
-# logger = logging.getLogger(__name__)
 logger = get_root_logger()
 logger.setLevel(logging.DEBUG)
 
@@ -250,6 +250,8 @@ def get_aperture_sums(psc0,
 
             # TODO Scintillation noise?
 
+            # TODO Scintillation noise?
+
             target_total_noise = np.sqrt(target_photon_noise**2 + readout**2)
             ideal_total_noise = np.sqrt(ideal_photon_noise**2 + readout**2)
 
@@ -398,17 +400,16 @@ def get_diff_flux(lc0,
     return lc1, flux.mask
 
 
-def subtract_color_background(fits_fn,
-                              bucket_path=None,
-                              box_size=(84, 84),
-                              filter_size=(3, 3),
-                              camera_bias=2048,
-                              estimator='median',
-                              interpolator='zoom',
-                              sigma=5,
-                              iters=5,
-                              exclude_percentile=100
-                              ):
+def get_rgb_background(fits_fn,
+                       box_size=(84, 84),
+                       filter_size=(3, 3),
+                       camera_bias=0,
+                       estimator='mean',
+                       interpolator='zoom',
+                       sigma=5,
+                       iters=5,
+                       exclude_percentile=100
+                       ):
     """Get the background for each color channel.
 
     Most of the options are described in the `photutils.Background2D` page:
@@ -417,12 +418,12 @@ def subtract_color_background(fits_fn,
 
     Args:
         fits_fn (str): The filename of the FITS image.
-        bucket_path (None, optional): Bucket path for upload, no upload if None (default).
         box_size (tuple, optional): The box size over which to compute the
             2D-Background, default (84, 84).
         filter_size (tuple, optional): The filter size for determining the median,
             default (3, 3).
-        camera_bias (int, optional): The built-in camera bias, default 2048.
+        camera_bias (int, optional): The built-in camera bias, default 0. A zero camera
+            bias means the bias will be considered as part of the background.
         estimator (str, optional): The estimator object to use, default 'median'.
         interpolator (str, optional): The interpolater object to user, default 'zoom'.
         sigma (int, optional): The sigma on which to filter values, default 5.
@@ -433,6 +434,9 @@ def subtract_color_background(fits_fn,
     Returns:
         list: A list containing a `photutils.Background2D` for each color channel, in RGB order.
     """
+    logger.info(f"Getting background for {fits_fn}")
+    logger.debug(f"{estimator} {interpolator} {box_size} Sigma: {sigma} Iter: {iters}")
+
     estimators = {
         'sexb': SExtractorBackground,
         'median': MedianBackground,
@@ -440,28 +444,26 @@ def subtract_color_background(fits_fn,
         'mmm': MMMBackground
     }
     interpolators = {
-        'zoom': BkgZoomInterpolator(),
+        'zoom': BkgZoomInterpolator,
     }
 
-    logger.info(f"Performing background subtraction for {fits_fn}")
-    logger.info(f"Est: {estimator} Interp: {interpolator} Box: {box_size} Sigma: {sigma} Iters: {iters}")
+    bkg_estimator = estimators[estimator]()
+    interp = interpolators[interpolator]()
 
     data = fits.getdata(fits_fn) - camera_bias
-    header = fits_utils.getheader(fits_fn)
 
-    # Got the data per color channel.
+    # Get the data per color channel.
     rgb_data = get_color_data(data)
-
-    bkg_estimator = estimators[estimator]()
-    interp = interpolators[interpolator]
-    sigma_clip = SigmaClip(sigma=sigma, maxiters=iters)
 
     backgrounds = list()
     for color, color_data in zip(['R', 'G', 'B'], rgb_data):
         logger.debug(f'Performing background {color} for {fits_fn}')
 
-        bkg = Background2D(color_data, box_size, filter_size=filter_size,
-                           sigma_clip=sigma_clip, bkg_estimator=bkg_estimator,
+        bkg = Background2D(color_data,
+                           box_size,
+                           filter_size=filter_size,
+                           sigma_clip=SigmaClip(sigma=sigma, maxiters=iters),
+                           bkg_estimator=bkg_estimator,
                            exclude_percentile=exclude_percentile,
                            mask=color_data.mask,
                            interpolator=interp)
@@ -471,39 +473,9 @@ def subtract_color_background(fits_fn,
         logger.debug(f"{color} Value: {bkg.background_median:.02f} RMS: {bkg.background_rms_median:.02f}")
 
     # Create one array for the backgrounds, where any holes are filled with zeros.
-    # Add bias back to data so we can save with unsigned.
     full_background = np.ma.array(backgrounds).sum(0).filled(0)
 
-    # Upload background file
-    if bucket_path is not None:
-        try:
-            back_fn = fits_fn.replace('.fits', '-background.fits')
-            bucket_path = bucket_path.replace('.fits', '-background.fits')
-
-            # Make FITS file with background substracted version
-            save_back_data = (full_background + camera_bias).astype(np.uint16)
-            hdu = fits.PrimaryHDU(data=save_back_data, header=header)
-            hdu.writeto(back_fn, overwrite=True)
-
-            # Pack the background
-            back_fz_fn = fits_utils.fpack(back_fn)
-            logger.debug(f'Background file saved to {back_fz_fn}')
-
-        except Exception as e:
-            logger.debug(f'Error uploading background file for {fits_fn}: {e}')
-
-    # Subtract the background
-    subtacted_data = data - full_background
-
-    # Replace FITS file with subtracted version
-    try:
-        header['BKGSUB'] = True
-        hdu = fits.PrimaryHDU(data=subtacted_data.astype(np.int16), header=header)
-        hdu.writeto(fits_fn, overwrite=True)
-    except Exception as e:
-        logger.debug(f'Error writing substracted FITS: {e}')
-
-    return fits_fn
+    return full_background
 
 
 def get_color_data(data):
@@ -537,6 +509,60 @@ def get_color_data(data):
     return rgb_data
 
 
+def get_stamp_size(df0, superpixel_padding=1):
+    """Get the stamp size for given pixel drifts
+
+    This will find the median drift length in both coordinate axes and append
+    a padding of superpixels. The returned length is for an assumed square postage
+    stamp.
+
+    Example:
+
+        Here the star coords (given by `.`) drift an average of 2 pixels in the
+        x-direction and 7 pixels in the y-direction. Since 7 is the larger of
+        the two it is used as the base, which is rounded up to the nearest number
+        of superpixels, so a stamp that is 8x8 pixels (represented by `o`). We
+        then add a default of one superpixel padding (`x`) around the stamp to
+        give 8+(2+2)=12
+
+                gbxxxxxxxxgb
+                rgxxxxxxxxrg
+                xxooo..oooxx
+                xxooo..oooxx
+                xxoo..ooooxx
+                xxooo..oooxx
+                xxooo..oooxx
+                xxooo..oooxx
+                xxooo..oooxx
+                xxooooooooxx
+                gbxxxxxxxxgb
+                rgxxxxxxxxrg
+
+    Args:
+        df0 (`pandas.DataFrame`): A DataFrame that includes the `x_max/x_min` and
+            `y_max/y_min` columns
+        superpixel_padding (int, optional): The number of superpixels to place
+            around the area the star traverses.
+
+    Returns:
+        int: The length of one side of a square postage stamp.
+    """
+    # Get the movement stats
+    x_range_mean, x_range_med, x_range_std = sigma_clipped_stats(df0.x_max - df0.x_min)
+    y_range_mean, y_range_med, y_range_std = sigma_clipped_stats(df0.y_max - df0.y_min)
+
+    # Get the larger of the two movements
+    stamp_size = max(int(x_range_med + round(x_range_std)), int(y_range_med + round(y_range_std)))
+
+    # Round to nearest superpixel integer
+    stamp_size = 2 * round(stamp_size / 2)
+
+    # Add padding for our superpixels (i.e. number of superpixels * pixel width of superpixel)
+    stamp_size += (superpixel_padding * 4)
+
+    return stamp_size
+
+
 def get_postage_stamps(point_sources, fits_fn, stamp_size=10, tmp_dir=None, force=False):
     """Extract postage stamps for each PICID in the given file.
 
@@ -545,18 +571,18 @@ def get_postage_stamps(point_sources, fits_fn, stamp_size=10, tmp_dir=None, forc
         fits_fn (str): The name of the FITS file to extract stamps from.
         stamp_size (int, optional): The size of the stamp to extract, default 10 pixels.
     """
-    
+
     if tmp_dir is None:
         tmp_dir = '/tmp'
-    
+
     row = point_sources.iloc[0]
     sources_csv_fn = os.path.join(tmp_dir, f'{row.unit_id}-{row.camera_id}-{row.seq_time}-{row.img_time}.csv')
     if os.path.exists(sources_csv_fn) and force is False:
         logger.info(f'{sources_csv_fn} already exists and force=False, returning')
         return sources_csv_fn
-    
+
     logger.debug(f'Sources metadata will be extracted to {sources_csv_fn}')
-    
+
     data = fits.getdata(fits_fn)
     header = fits.getheader(fits_fn)
 
@@ -574,12 +600,14 @@ def get_postage_stamps(point_sources, fits_fn, stamp_size=10, tmp_dir=None, forc
             'sequence_time',
             'image_time',
             'x', 'y',
+            'ellipticity', 'theta_image',
             'ra', 'dec',
             'tmag', 'tmag_err',
             'vmag', 'vmag_err',
             'lumclass', 'lum', 'lum_err',
             'contratio', 'numcont',
             'catalog_sep_arcsec',
+            'fwhm',
             'sextractor_flags',
             'snr',
             # 'sextractor_background',
@@ -612,12 +640,14 @@ def get_postage_stamps(point_sources, fits_fn, stamp_size=10, tmp_dir=None, forc
                 parse_date(row.seq_time),
                 row.img_time,
                 int(row.x), int(row.y),
+                row.ellipticity, row.theta_image,
                 row.ra, row.dec,
                 row.tmag, row.tmag_err,
                 row.vmag, row.vmag_err,
                 row.lumclass, row.lum, row.lum_err,
                 row.contratio, row.numcont,
                 row.catalog_sep_arcsec,
+                row.fwhm_image,
                 int(row['flags']),
                 row['snr'],
                 # row.background,
