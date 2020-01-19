@@ -77,7 +77,7 @@ def get_stars(
         ra_selector = f'(ra >= {ra_min} AND ra <= {ra_max})'
 
     dec_selector = None
-    if np.abs(dec_max - dec_min) > 340:
+    if np.abs(dec_max - dec_min) > 70:
         dec_selector = f'(dec >= {dec_max} OR dec <= {dec_min})'
     else:
         dec_selector = f'(dec >= {dec_min} AND dec <= {dec_max})'
