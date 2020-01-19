@@ -447,8 +447,6 @@ def get_rgb_background(fits_fn,
         'zoom': BkgZoomInterpolator,
     }
 
-    logger.info(f"Performing background subtraction for {fits_fn}")
-    logger.info(f"Est: {estimator} Interp: {interpolator} Box: {box_size} Sigma: {sigma} Iters: {iters}")
     bkg_estimator = estimators[estimator]()
     interp = interpolators[interpolator]()
 
